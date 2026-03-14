@@ -20,7 +20,13 @@ interface ValidationResult {
 
 function DashboardContent() {
   const searchParams = useSearchParams();
-  const token = searchParams.get("token") || searchParams.get("accessToken");
+
+  // Vercel sends token as different param names depending on the flow
+  const token =
+    searchParams.get("token") ||
+    searchParams.get("accessToken") ||
+    searchParams.get("access_token");
+
   const configurationId = searchParams.get("configurationId");
   const teamId = searchParams.get("teamId");
   const userId = searchParams.get("userId");
@@ -31,9 +37,12 @@ function DashboardContent() {
   const [selectedProject, setSelectedProject] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [debugInfo, setDebugInfo] = useState("");
 
   // Auth mode
-  const [authMode, setAuthMode] = useState<"standard" | "replication">("standard");
+  const [authMode, setAuthMode] = useState<"standard" | "replication">(
+    "standard"
+  );
 
   // Standard fields
   const [apiKey, setApiKey] = useState("");
@@ -41,40 +50,106 @@ function DashboardContent() {
 
   // Replication fields
   const [oauthKey, setOauthKey] = useState("");
-  const [accessToken, setAccessToken] = useState("");
+  const [accessTokenField, setAccessTokenField] = useState("");
 
   // Common
   const [mlsId, setMlsId] = useState("");
   const [validation, setValidation] = useState<ValidationResult | null>(null);
 
+  // If no token in URL, try to get one via the callback flow
+  const getTokenViaCallback = useCallback(async () => {
+    if (token) return token;
+
+    // If we have a configurationId but no token, we need to exchange via our API
+    if (configurationId) {
+      try {
+        const res = await fetch(
+          `/api/get-token?configurationId=${configurationId}${teamId ? `&teamId=${teamId}` : ""}`
+        );
+        if (res.ok) {
+          const data = await res.json();
+          return data.accessToken || null;
+        }
+      } catch {
+        // Fall through
+      }
+    }
+
+    return null;
+  }, [token, configurationId, teamId]);
+
   // Fetch projects
   const fetchProjects = useCallback(async () => {
-    if (!token) return;
+    const activeToken = token || (await getTokenViaCallback());
+
+    if (!activeToken) {
+      setDebugInfo(
+        `URL params: token=${searchParams.get("token")}, accessToken=${searchParams.get("accessToken")}, configurationId=${configurationId}`
+      );
+      return;
+    }
+
     setLoading(true);
     setError("");
     try {
-      const teamQuery = teamId ? `?teamId=${teamId}` : "";
-      const res = await fetch(
-        `https://api.vercel.com/v9/projects${teamQuery}`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
+      // Try with teamId first, then without
+      const urls = [];
+      if (teamId) {
+        urls.push(`https://api.vercel.com/v9/projects?teamId=${teamId}`);
+      }
+      urls.push("https://api.vercel.com/v9/projects");
+
+      let projectList: Project[] = [];
+      let lastError = "";
+
+      for (const url of urls) {
+        try {
+          const res = await fetch(url, {
+            headers: { Authorization: `Bearer ${activeToken}` },
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            const fetched =
+              data.projects?.map(
+                (p: {
+                  id: string;
+                  name: string;
+                  framework: string | null;
+                }) => ({
+                  id: p.id,
+                  name: p.name,
+                  framework: p.framework,
+                })
+              ) || [];
+
+            if (fetched.length > 0) {
+              projectList = fetched;
+              break;
+            }
+          } else {
+            const errData = await res.json().catch(() => ({}));
+            lastError = errData?.error?.message || `Status ${res.status}`;
+          }
+        } catch (err) {
+          lastError =
+            err instanceof Error ? err.message : "Network error";
+          continue;
         }
-      );
-      if (!res.ok) throw new Error("Failed to fetch projects");
-      const data = await res.json();
-      setProjects(
-        data.projects?.map((p: { id: string; name: string; framework: string | null }) => ({
-          id: p.id,
-          name: p.name,
-          framework: p.framework,
-        })) || []
-      );
+      }
+
+      if (projectList.length === 0 && lastError) {
+        setError(`Could not load projects: ${lastError}`);
+        setDebugInfo(`Token prefix: ${activeToken.substring(0, 8)}...`);
+      }
+
+      setProjects(projectList);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load projects");
     } finally {
       setLoading(false);
     }
-  }, [token, teamId]);
+  }, [token, teamId, configurationId, searchParams, getTokenViaCallback]);
 
   useEffect(() => {
     fetchProjects();
@@ -88,7 +163,7 @@ function DashboardContent() {
     try {
       const body =
         authMode === "replication"
-          ? { mode: "replication", oauthKey, accessToken }
+          ? { mode: "replication", oauthKey, accessToken: accessTokenField }
           : { mode: "standard", apiKey, apiSecret };
 
       const res = await fetch("/api/validate-spark", {
@@ -110,11 +185,17 @@ function DashboardContent() {
 
   // Save configuration
   const handleSave = async () => {
+    const activeToken = token || (await getTokenViaCallback());
+    if (!activeToken) {
+      setError("No access token available. Please reinstall the integration.");
+      return;
+    }
+
     setLoading(true);
     setError("");
     try {
       const body: Record<string, string | undefined> = {
-        accessToken: token || "",
+        accessToken: activeToken,
         projectId: selectedProject,
         teamId: teamId || undefined,
         mode: authMode,
@@ -123,7 +204,7 @@ function DashboardContent() {
 
       if (authMode === "replication") {
         body.sparkOauthKey = oauthKey;
-        body.sparkAccessToken = accessToken;
+        body.sparkAccessToken = accessTokenField;
       } else {
         body.sparkApiKey = apiKey;
         body.sparkApiSecret = apiSecret;
@@ -147,7 +228,7 @@ function DashboardContent() {
     }
   };
 
-  // Styles
+  // ── Styles ──
   const containerStyle: React.CSSProperties = {
     minHeight: "100vh",
     backgroundColor: "#000",
@@ -231,14 +312,17 @@ function DashboardContent() {
     flex: 1,
     padding: "12px 16px",
     borderRadius: 10,
-    border: active ? "1px solid rgba(99,102,241,0.4)" : "1px solid rgba(255,255,255,0.06)",
-    backgroundColor: active ? "rgba(99,102,241,0.1)" : "rgba(255,255,255,0.02)",
+    border: active
+      ? "1px solid rgba(99,102,241,0.4)"
+      : "1px solid rgba(255,255,255,0.06)",
+    backgroundColor: active
+      ? "rgba(99,102,241,0.1)"
+      : "rgba(255,255,255,0.02)",
     color: active ? "#818cf8" : "#71717a",
     fontWeight: 500,
     fontSize: 13,
     cursor: "pointer",
     textAlign: "center" as const,
-    transition: "all 0.2s",
   });
 
   const envRowStyle: React.CSSProperties = {
@@ -264,12 +348,14 @@ function DashboardContent() {
     fontSize: 13,
     fontWeight: 600,
     backgroundColor:
-      s < step ? "#22c55e" : s === step ? "#6366f1" : "rgba(255,255,255,0.05)",
+      s < step
+        ? "#22c55e"
+        : s === step
+          ? "#6366f1"
+          : "rgba(255,255,255,0.05)",
     color: s <= step ? "#fff" : "#52525b",
     border:
-      s === step
-        ? "2px solid rgba(99,102,241,0.4)"
-        : "2px solid transparent",
+      s === step ? "2px solid rgba(99,102,241,0.4)" : "2px solid transparent",
   });
 
   const stepLabelStyle = (s: number): React.CSSProperties => ({
@@ -279,19 +365,55 @@ function DashboardContent() {
     marginTop: 6,
   });
 
+  // ── No Token Screen ──
   if (!token) {
     return (
       <div style={containerStyle}>
         <div style={cardStyle}>
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
-            <h2 style={{ fontSize: 20, fontWeight: 600, color: "#fff", marginBottom: 8 }}>
+            <h2
+              style={{
+                fontSize: 20,
+                fontWeight: 600,
+                color: "#fff",
+                marginBottom: 8,
+              }}
+            >
               No Access Token
             </h2>
-            <p style={{ fontSize: 14, color: "#71717a", marginBottom: 24, lineHeight: 1.6 }}>
-              This page should be accessed through the Vercel integration install flow.
-              Please install the integration from the Vercel Marketplace.
+            <p
+              style={{
+                fontSize: 14,
+                color: "#71717a",
+                marginBottom: 24,
+                lineHeight: 1.6,
+              }}
+            >
+              This page should be accessed through the Vercel integration
+              install flow. Please install the integration from the Vercel
+              Marketplace.
             </p>
+
+            {debugInfo && (
+              <div
+                style={{
+                  padding: "12px 16px",
+                  borderRadius: 10,
+                  backgroundColor: "rgba(234,179,8,0.1)",
+                  border: "1px solid rgba(234,179,8,0.2)",
+                  color: "#fbbf24",
+                  fontSize: 11,
+                  fontFamily: "monospace",
+                  marginBottom: 16,
+                  textAlign: "left",
+                  wordBreak: "break-all",
+                }}
+              >
+                Debug: {debugInfo}
+              </div>
+            )}
+
             <a
               href="https://vercel.com/integrations/spark-idx/new"
               style={{
@@ -396,16 +518,43 @@ function DashboardContent() {
               color: "#fb7185",
               fontSize: 13,
               marginBottom: 20,
+              wordBreak: "break-word",
             }}
           >
             {error}
           </div>
         )}
 
+        {/* Debug info */}
+        {debugInfo && (
+          <div
+            style={{
+              padding: "12px 16px",
+              borderRadius: 10,
+              backgroundColor: "rgba(234,179,8,0.1)",
+              border: "1px solid rgba(234,179,8,0.2)",
+              color: "#fbbf24",
+              fontSize: 11,
+              fontFamily: "monospace",
+              marginBottom: 20,
+              wordBreak: "break-all",
+            }}
+          >
+            {debugInfo}
+          </div>
+        )}
+
         {/* ─── STEP 1: Select Project ─── */}
         {step === 1 && (
           <div>
-            <h2 style={{ fontSize: 20, fontWeight: 600, color: "#fff", marginBottom: 4 }}>
+            <h2
+              style={{
+                fontSize: 20,
+                fontWeight: 600,
+                color: "#fff",
+                marginBottom: 4,
+              }}
+            >
               Select a Project
             </h2>
             <p style={{ fontSize: 14, color: "#71717a", marginBottom: 24 }}>
@@ -413,12 +562,32 @@ function DashboardContent() {
             </p>
 
             {loading ? (
-              <div style={{ textAlign: "center", padding: "32px 0", color: "#71717a", fontSize: 14 }}>
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "32px 0",
+                  color: "#71717a",
+                  fontSize: 14,
+                }}
+              >
                 Loading projects...
               </div>
             ) : projects.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "32px 0", color: "#71717a", fontSize: 14 }}>
-                No projects found. Create a project on Vercel first.
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "32px 0",
+                  color: "#71717a",
+                  fontSize: 14,
+                }}
+              >
+                <p style={{ marginBottom: 16 }}>
+                  No projects found on this account.
+                </p>
+                <p style={{ fontSize: 12, color: "#52525b" }}>
+                  Create a project on Vercel first, then come back to configure
+                  the integration.
+                </p>
               </div>
             ) : (
               <>
@@ -455,7 +624,14 @@ function DashboardContent() {
         {/* ─── STEP 2: Credentials ─── */}
         {step === 2 && (
           <div>
-            <h2 style={{ fontSize: 20, fontWeight: 600, color: "#fff", marginBottom: 4 }}>
+            <h2
+              style={{
+                fontSize: 20,
+                fontWeight: 600,
+                color: "#fff",
+                marginBottom: 4,
+              }}
+            >
               Spark API Credentials
             </h2>
             <p style={{ fontSize: 14, color: "#71717a", marginBottom: 24 }}>
@@ -471,7 +647,9 @@ function DashboardContent() {
             </p>
 
             {/* Auth Mode Tabs */}
-            <label style={{ ...labelStyle, marginBottom: 12 }}>Authentication Method</label>
+            <label style={{ ...labelStyle, marginBottom: 12 }}>
+              Authentication Method
+            </label>
             <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
               <button
                 style={tabStyle(authMode === "standard")}
@@ -497,7 +675,6 @@ function DashboardContent() {
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                 />
-
                 <label style={labelStyle}>API Secret</label>
                 <input
                   style={inputStyle}
@@ -521,9 +698,11 @@ function DashboardContent() {
                     marginBottom: 20,
                   }}
                 >
-                  <strong style={{ color: "#818cf8" }}>Replication Mode</strong>
+                  <strong style={{ color: "#818cf8" }}>
+                    Replication Mode
+                  </strong>
                   <br />
-                  Uses a bearer token to access the replication endpoint at{" "}
+                  Uses a bearer token to access{" "}
                   <code style={{ color: "#c084fc", fontSize: 11 }}>
                     replication.sparkapi.com
                   </code>
@@ -546,14 +725,15 @@ function DashboardContent() {
                   value={oauthKey}
                   onChange={(e) => setOauthKey(e.target.value)}
                 />
-
-                <label style={labelStyle}>Access Token (Bearer Token)</label>
+                <label style={labelStyle}>
+                  Access Token (Bearer Token)
+                </label>
                 <input
                   style={inputStyle}
                   type="password"
                   placeholder="Your Access Token"
-                  value={accessToken}
-                  onChange={(e) => setAccessToken(e.target.value)}
+                  value={accessTokenField}
+                  onChange={(e) => setAccessTokenField(e.target.value)}
                 />
               </>
             )}
@@ -567,7 +747,6 @@ function DashboardContent() {
               onChange={(e) => setMlsId(e.target.value)}
             />
 
-            {/* Validation result */}
             {validation && (
               <div
                 style={{
@@ -588,7 +767,14 @@ function DashboardContent() {
               >
                 {validation.valid ? "✓" : "✕"} {validation.message}
                 {validation.mlsName && (
-                  <span style={{ display: "block", fontSize: 12, marginTop: 4, opacity: 0.8 }}>
+                  <span
+                    style={{
+                      display: "block",
+                      fontSize: 12,
+                      marginTop: 4,
+                      opacity: 0.8,
+                    }}
+                  >
                     MLS: {validation.mlsName}
                     {validation.listingCount !== undefined &&
                       ` · ${validation.listingCount.toLocaleString()} listings`}
@@ -606,14 +792,18 @@ function DashboardContent() {
                   ...primaryBtnStyle,
                   opacity:
                     loading ||
-                    (authMode === "standard" ? !apiKey || !apiSecret : !oauthKey || !accessToken)
+                    (authMode === "standard"
+                      ? !apiKey || !apiSecret
+                      : !oauthKey || !accessTokenField)
                       ? 0.4
                       : 1,
                 }}
                 onClick={handleValidate}
                 disabled={
                   loading ||
-                  (authMode === "standard" ? !apiKey || !apiSecret : !oauthKey || !accessToken)
+                  (authMode === "standard"
+                    ? !apiKey || !apiSecret
+                    : !oauthKey || !accessTokenField)
                 }
               >
                 {loading ? "Validating..." : "Validate & Continue"}
@@ -625,14 +815,20 @@ function DashboardContent() {
         {/* ─── STEP 3: Review ─── */}
         {step === 3 && (
           <div>
-            <h2 style={{ fontSize: 20, fontWeight: 600, color: "#fff", marginBottom: 4 }}>
-              Review & Save
+            <h2
+              style={{
+                fontSize: 20,
+                fontWeight: 600,
+                color: "#fff",
+                marginBottom: 4,
+              }}
+            >
+              Review &amp; Save
             </h2>
             <p style={{ fontSize: 14, color: "#71717a", marginBottom: 24 }}>
               These environment variables will be set on your project.
             </p>
 
-            {/* Project name */}
             <div
               style={{
                 ...envRowStyle,
@@ -642,7 +838,9 @@ function DashboardContent() {
               }}
             >
               <span>📁</span>
-              <span style={{ flex: 1, color: "#a1a1aa", fontSize: 11 }}>PROJECT</span>
+              <span style={{ flex: 1, color: "#a1a1aa", fontSize: 11 }}>
+                PROJECT
+              </span>
               <span style={{ color: "#fff", fontSize: 13 }}>
                 {projects.find((p) => p.id === selectedProject)?.name}
               </span>
@@ -657,28 +855,59 @@ function DashboardContent() {
               }}
             >
               <span>🔄</span>
-              <span style={{ flex: 1, color: "#a1a1aa", fontSize: 11 }}>AUTH MODE</span>
+              <span style={{ flex: 1, color: "#a1a1aa", fontSize: 11 }}>
+                AUTH MODE
+              </span>
               <span style={{ color: "#c084fc", fontSize: 13 }}>
-                {authMode === "replication" ? "Replication Token" : "API Key + Secret"}
+                {authMode === "replication"
+                  ? "Replication Token"
+                  : "API Key + Secret"}
               </span>
             </div>
 
-            {/* Env vars preview */}
             {authMode === "replication" ? (
               <>
                 <div style={envRowStyle}>
                   <span>🔒</span>
-                  <span style={{ flex: 1, textAlign: "left", color: "#e4e4e7" }}>SPARK_OAUTH_KEY</span>
-                  <span style={{ fontSize: 10, color: "#818cf8" }}>encrypted</span>
+                  <span
+                    style={{
+                      flex: 1,
+                      textAlign: "left",
+                      color: "#e4e4e7",
+                    }}
+                  >
+                    SPARK_OAUTH_KEY
+                  </span>
+                  <span style={{ fontSize: 10, color: "#818cf8" }}>
+                    encrypted
+                  </span>
                 </div>
                 <div style={envRowStyle}>
                   <span>🔒</span>
-                  <span style={{ flex: 1, textAlign: "left", color: "#e4e4e7" }}>SPARK_ACCESS_TOKEN</span>
-                  <span style={{ fontSize: 10, color: "#818cf8" }}>encrypted</span>
+                  <span
+                    style={{
+                      flex: 1,
+                      textAlign: "left",
+                      color: "#e4e4e7",
+                    }}
+                  >
+                    SPARK_ACCESS_TOKEN
+                  </span>
+                  <span style={{ fontSize: 10, color: "#818cf8" }}>
+                    encrypted
+                  </span>
                 </div>
                 <div style={envRowStyle}>
                   <span>📋</span>
-                  <span style={{ flex: 1, textAlign: "left", color: "#e4e4e7" }}>SPARK_REPLICATION_URL</span>
+                  <span
+                    style={{
+                      flex: 1,
+                      textAlign: "left",
+                      color: "#e4e4e7",
+                    }}
+                  >
+                    SPARK_REPLICATION_URL
+                  </span>
                   <span style={{ fontSize: 10, color: "#60a5fa" }}>plain</span>
                 </div>
               </>
@@ -686,34 +915,72 @@ function DashboardContent() {
               <>
                 <div style={envRowStyle}>
                   <span>🔒</span>
-                  <span style={{ flex: 1, textAlign: "left", color: "#e4e4e7" }}>SPARK_API_KEY</span>
-                  <span style={{ fontSize: 10, color: "#818cf8" }}>encrypted</span>
+                  <span
+                    style={{
+                      flex: 1,
+                      textAlign: "left",
+                      color: "#e4e4e7",
+                    }}
+                  >
+                    SPARK_API_KEY
+                  </span>
+                  <span style={{ fontSize: 10, color: "#818cf8" }}>
+                    encrypted
+                  </span>
                 </div>
                 <div style={envRowStyle}>
                   <span>🔒</span>
-                  <span style={{ flex: 1, textAlign: "left", color: "#e4e4e7" }}>SPARK_API_SECRET</span>
-                  <span style={{ fontSize: 10, color: "#818cf8" }}>encrypted</span>
+                  <span
+                    style={{
+                      flex: 1,
+                      textAlign: "left",
+                      color: "#e4e4e7",
+                    }}
+                  >
+                    SPARK_API_SECRET
+                  </span>
+                  <span style={{ fontSize: 10, color: "#818cf8" }}>
+                    encrypted
+                  </span>
                 </div>
               </>
             )}
 
             <div style={envRowStyle}>
               <span>📋</span>
-              <span style={{ flex: 1, textAlign: "left", color: "#e4e4e7" }}>SPARK_AUTH_MODE</span>
-              <span style={{ fontSize: 10, color: "#60a5fa" }}>{authMode}</span>
+              <span
+                style={{ flex: 1, textAlign: "left", color: "#e4e4e7" }}
+              >
+                SPARK_AUTH_MODE
+              </span>
+              <span style={{ fontSize: 10, color: "#60a5fa" }}>
+                {authMode}
+              </span>
             </div>
 
             {mlsId && (
               <div style={envRowStyle}>
                 <span>📋</span>
-                <span style={{ flex: 1, textAlign: "left", color: "#e4e4e7" }}>SPARK_MLS_ID</span>
-                <span style={{ fontSize: 10, color: "#60a5fa" }}>{mlsId}</span>
+                <span
+                  style={{
+                    flex: 1,
+                    textAlign: "left",
+                    color: "#e4e4e7",
+                  }}
+                >
+                  SPARK_MLS_ID
+                </span>
+                <span style={{ fontSize: 10, color: "#60a5fa" }}>
+                  {mlsId}
+                </span>
               </div>
             )}
 
             <div style={envRowStyle}>
               <span>✓</span>
-              <span style={{ flex: 1, textAlign: "left", color: "#e4e4e7" }}>
+              <span
+                style={{ flex: 1, textAlign: "left", color: "#e4e4e7" }}
+              >
                 NEXT_PUBLIC_SPARK_IDX_ENABLED
               </span>
               <span style={{ fontSize: 10, color: "#22c55e" }}>true</span>
@@ -724,7 +991,10 @@ function DashboardContent() {
                 Back
               </button>
               <button
-                style={{ ...primaryBtnStyle, opacity: loading ? 0.4 : 1 }}
+                style={{
+                  ...primaryBtnStyle,
+                  opacity: loading ? 0.4 : 1,
+                }}
                 onClick={handleSave}
                 disabled={loading}
               >
@@ -753,7 +1023,14 @@ function DashboardContent() {
             >
               ✓
             </div>
-            <h2 style={{ fontSize: 22, fontWeight: 600, color: "#fff", marginBottom: 8 }}>
+            <h2
+              style={{
+                fontSize: 22,
+                fontWeight: 600,
+                color: "#fff",
+                marginBottom: 8,
+              }}
+            >
               You&apos;re all set!
             </h2>
             <p
@@ -794,10 +1071,15 @@ function DashboardContent() {
               >
                 Next Steps
               </p>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                  <span style={{ color: "#818cf8", fontSize: 14, marginTop: 1 }}>1.</span>
-                  <span style={{ fontSize: 13, color: "#a1a1aa", lineHeight: 1.5 }}>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 10,
+                }}
+              >
+                {[
+                  <>
                     Install the{" "}
                     <code
                       style={{
@@ -811,20 +1093,52 @@ function DashboardContent() {
                       @spark-idx/next
                     </code>{" "}
                     package in your project
-                  </span>
-                </div>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                  <span style={{ color: "#818cf8", fontSize: 14, marginTop: 1 }}>2.</span>
-                  <span style={{ fontSize: 13, color: "#a1a1aa", lineHeight: 1.5 }}>
-                    Import <code style={{ fontSize: 12, color: "#c084fc", background: "rgba(139,92,246,0.1)", padding: "2px 6px", borderRadius: 4 }}>SparkClient</code> and start fetching listings
-                  </span>
-                </div>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                  <span style={{ color: "#818cf8", fontSize: 14, marginTop: 1 }}>3.</span>
-                  <span style={{ fontSize: 13, color: "#a1a1aa", lineHeight: 1.5 }}>
-                    Deploy your project — env vars are already provisioned
-                  </span>
-                </div>
+                  </>,
+                  <>
+                    Import{" "}
+                    <code
+                      style={{
+                        fontSize: 12,
+                        color: "#c084fc",
+                        background: "rgba(139,92,246,0.1)",
+                        padding: "2px 6px",
+                        borderRadius: 4,
+                      }}
+                    >
+                      SparkClient
+                    </code>{" "}
+                    and start fetching listings
+                  </>,
+                  <>Deploy your project — env vars are already provisioned</>,
+                ].map((text, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 10,
+                    }}
+                  >
+                    <span
+                      style={{
+                        color: "#818cf8",
+                        fontSize: 14,
+                        marginTop: 1,
+                      }}
+                    >
+                      {i + 1}.
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 13,
+                        color: "#a1a1aa",
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {text}
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -842,17 +1156,31 @@ function DashboardContent() {
               >
                 Read Docs
               </a>
-              <a
-                href={`https://vercel.com/dashboard/${teamId ? `team_${teamId}/` : ""}${projects.find((p) => p.id === selectedProject)?.name || ""}`}
-                style={{
-                  ...primaryBtnStyle,
-                  textDecoration: "none",
-                  textAlign: "center",
-                  display: "block",
-                }}
-              >
-                Go to Project →
-              </a>
+              {next ? (
+                <a
+                  href={next}
+                  style={{
+                    ...primaryBtnStyle,
+                    textDecoration: "none",
+                    textAlign: "center",
+                    display: "block",
+                  }}
+                >
+                  Return to Vercel →
+                </a>
+              ) : (
+                <a
+                  href="https://vercel.com/dashboard"
+                  style={{
+                    ...primaryBtnStyle,
+                    textDecoration: "none",
+                    textAlign: "center",
+                    display: "block",
+                  }}
+                >
+                  Go to Dashboard →
+                </a>
+              )}
             </div>
           </div>
         )}

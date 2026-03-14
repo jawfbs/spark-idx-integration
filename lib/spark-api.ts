@@ -1,167 +1,219 @@
-import { SPARK_API_BASE } from "./constants";
+const SPARK_API_URL = "https://sparkapi.com/v1";
+const SPARK_REPLICATION_URL = "https://replication.sparkapi.com";
 
-interface SparkAuthResponse {
-  access_token: string;
-  expires_in: number;
-  refresh_token?: string;
+export interface SparkAuthStandard {
+  mode: "standard";
+  apiKey: string;
+  apiSecret: string;
 }
 
-interface SparkListing {
-  Id: string;
-  ListPrice: number;
-  StandardStatus: string;
-  UnparsedAddress: string;
-  City: string;
-  StateOrProvince: string;
-  PostalCode: string;
-  BedroomsTotal: number;
-  BathroomsTotalInteger: number;
-  LivingArea: number;
-  ListingId: string;
-  Latitude: number;
-  Longitude: number;
-  Media?: Array<{
-    MediaURL: string;
-    ShortDescription: string;
-  }>;
+export interface SparkAuthReplication {
+  mode: "replication";
+  oauthKey: string;
+  accessToken: string;
 }
 
-interface SparkSearchParams {
-  status?: string;
-  city?: string;
-  priceMin?: number;
-  priceMax?: number;
-  propertyType?: string;
-  limit?: number;
-  offset?: number;
+export type SparkAuth = SparkAuthStandard | SparkAuthReplication;
+
+export interface SparkValidationResult {
+  valid: boolean;
+  message: string;
+  mlsName?: string;
+  systemName?: string;
+  listingCount?: number;
+  mode?: string;
 }
 
-export class SparkClient {
-  private apiKey: string;
-  private apiSecret: string;
+/**
+ * Validate Spark API credentials — supports both modes
+ */
+export async function validateSparkCredentials(
+  auth: SparkAuth
+): Promise<SparkValidationResult> {
+  try {
+    if (auth.mode === "replication") {
+      return await validateReplicationToken(auth);
+    } else {
+      return await validateStandardCredentials(auth);
+    }
+  } catch (error) {
+    return {
+      valid: false,
+      message:
+        error instanceof Error ? error.message : "Unknown validation error",
+    };
+  }
+}
 
-  constructor(apiKey?: string, apiSecret?: string) {
-    this.apiKey = apiKey || process.env.SPARK_API_KEY || "";
-    this.apiSecret = apiSecret || process.env.SPARK_API_SECRET || "";
+/**
+ * Standard Spark API validation (API Key + Secret)
+ */
+async function validateStandardCredentials(
+  auth: SparkAuthStandard
+): Promise<SparkValidationResult> {
+  // Step 1: Get session token
+  const sessionResponse = await fetch(`${SPARK_API_URL}/session`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-SparkApi-User-Agent": "SparkIDXVercelIntegration/1.0",
+    },
+    body: JSON.stringify({
+      D: {
+        ApiKey: auth.apiKey,
+        ApiSig: auth.apiSecret,
+      },
+    }),
+  });
+
+  if (!sessionResponse.ok) {
+    const status = sessionResponse.status;
+    if (status === 401 || status === 403) {
+      return {
+        valid: false,
+        message: `Authentication failed (${status}). Check your API Key and Secret.`,
+      };
+    }
+    return {
+      valid: false,
+      message: `Spark API returned status ${status}`,
+    };
   }
 
-  private getAuthHeader(): string {
-    return `SparkApi ApiKey="${this.apiKey}"`;
+  // Step 2: Try to fetch system info
+  const sessionData = await sessionResponse.json();
+  const token =
+    sessionData?.D?.Results?.[0]?.AuthToken || sessionData?.D?.AuthToken;
+
+  if (!token) {
+    return {
+      valid: false,
+      message: "Authentication succeeded but no token was returned.",
+    };
   }
 
-  async validateCredentials(): Promise<{
-    valid: boolean;
-    message: string;
-    mlsName?: string;
-  }> {
+  // Step 3: Get system info
+  try {
+    const systemResponse = await fetch(`${SPARK_API_URL}/system`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "X-SparkApi-User-Agent": "SparkIDXVercelIntegration/1.0",
+      },
+    });
+
+    if (systemResponse.ok) {
+      const systemData = await systemResponse.json();
+      const system = systemData?.D?.Results?.[0];
+      return {
+        valid: true,
+        message: "Connected successfully",
+        mlsName: system?.Name || "Unknown MLS",
+        systemName: system?.Mls || system?.Name || "Spark API",
+        mode: "standard",
+      };
+    }
+  } catch {
+    // System info is optional
+  }
+
+  return {
+    valid: true,
+    message: "Connected successfully",
+    mode: "standard",
+  };
+}
+
+/**
+ * Replication token validation (Bearer Token)
+ */
+async function validateReplicationToken(
+  auth: SparkAuthReplication
+): Promise<SparkValidationResult> {
+  // Try the replication endpoint first
+  const endpoints = [
+    `${SPARK_REPLICATION_URL}/v1/listings?_limit=1`,
+    `${SPARK_REPLICATION_URL}/v1/system`,
+    `${SPARK_API_URL}/listings?_limit=1`,
+    `${SPARK_API_URL}/system`,
+  ];
+
+  for (const endpoint of endpoints) {
     try {
-      const response = await fetch(`${SPARK_API_BASE}/my/account`, {
+      const response = await fetch(endpoint, {
         headers: {
-          Authorization: this.getAuthHeader(),
-          Accept: "application/json",
+          Authorization: `Bearer ${auth.accessToken}`,
+          "X-SparkApi-User-Agent": "SparkIDXVercelIntegration/1.0",
         },
       });
 
       if (response.ok) {
         const data = await response.json();
+
+        // Try to extract useful info
+        const results = data?.D?.Results;
+        const totalCount =
+          data?.D?.Pagination?.TotalRows || results?.length || 0;
+
+        // Check if this was a system endpoint
+        if (endpoint.includes("/system") && results?.[0]) {
+          return {
+            valid: true,
+            message: "Replication token validated successfully",
+            mlsName: results[0]?.Name || "Demo MLS",
+            systemName: results[0]?.Mls || results[0]?.Name || "Spark API",
+            listingCount: totalCount,
+            mode: "replication",
+          };
+        }
+
         return {
           valid: true,
-          message: "Connected successfully",
-          mlsName: data?.D?.Results?.[0]?.Mls || "Unknown MLS",
+          message: "Replication token validated successfully",
+          listingCount: totalCount,
+          mode: "replication",
         };
       }
 
-      return {
-        valid: false,
-        message: `Authentication failed (${response.status})`,
-      };
-    } catch (error) {
-      return {
-        valid: false,
-        message: `Connection error: ${error instanceof Error ? error.message : "Unknown"}`,
-      };
+      if (response.status === 401 || response.status === 403) {
+        continue; // Try next endpoint
+      }
+    } catch {
+      continue; // Try next endpoint
     }
   }
 
-  async searchListings(params: SparkSearchParams = {}): Promise<{
-    listings: SparkListing[];
-    total: number;
-  }> {
-    const filters: string[] = [];
-
-    if (params.status) filters.push(`StandardStatus Eq '${params.status}'`);
-    if (params.city) filters.push(`City Eq '${params.city}'`);
-    if (params.priceMin) filters.push(`ListPrice Ge ${params.priceMin}`);
-    if (params.priceMax) filters.push(`ListPrice Le ${params.priceMax}`);
-    if (params.propertyType)
-      filters.push(`PropertyType Eq '${params.propertyType}'`);
-
-    const queryParams = new URLSearchParams();
-    if (filters.length > 0) queryParams.set("$filter", filters.join(" And "));
-    if (params.limit) queryParams.set("$top", params.limit.toString());
-    if (params.offset) queryParams.set("$skip", params.offset.toString());
-    queryParams.set("$orderby", "-ListPrice");
-
+  // If all endpoints failed, try one more with the OAuth key as API key header
+  try {
     const response = await fetch(
-      `${SPARK_API_BASE}/listings?${queryParams.toString()}`,
+      `${SPARK_REPLICATION_URL}/v1/listings?_limit=1`,
       {
         headers: {
-          Authorization: this.getAuthHeader(),
-          Accept: "application/json",
+          Authorization: `Bearer ${auth.accessToken}`,
+          "X-SparkApi-User-Key": auth.oauthKey,
+          "X-SparkApi-User-Agent": "SparkIDXVercelIntegration/1.0",
         },
-        next: { revalidate: 3600 },
       }
     );
 
-    if (!response.ok) {
-      throw new Error(`Spark API error: ${response.status}`);
+    if (response.ok) {
+      return {
+        valid: true,
+        message: "Replication token validated successfully",
+        mode: "replication",
+      };
     }
 
-    const data = await response.json();
     return {
-      listings: data?.D?.Results || [],
-      total: data?.D?.TotalCount || 0,
+      valid: false,
+      message: `Authentication failed (${response.status}). Check your OAuth Key and Access Token.`,
     };
-  }
-
-  async getListing(listingId: string): Promise<SparkListing | null> {
-    const response = await fetch(
-      `${SPARK_API_BASE}/listings/${listingId}?$expand=Media`,
-      {
-        headers: {
-          Authorization: this.getAuthHeader(),
-          Accept: "application/json",
-        },
-        next: { revalidate: 3600 },
-      }
-    );
-
-    if (!response.ok) return null;
-
-    const data = await response.json();
-    return data?.D?.Results?.[0] || null;
-  }
-
-  async getSystemInfo(): Promise<{
-    name: string;
-    listingCount: number;
-  }> {
-    const response = await fetch(`${SPARK_API_BASE}/system`, {
-      headers: {
-        Authorization: this.getAuthHeader(),
-        Accept: "application/json",
-      },
-    });
-
-    if (!response.ok) {
-      return { name: "Unknown", listingCount: 0 };
-    }
-
-    const data = await response.json();
-    const system = data?.D?.Results?.[0];
+  } catch (error) {
     return {
-      name: system?.Name || "Unknown MLS",
-      listingCount: system?.Configuration?.ListingCount || 0,
+      valid: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Could not connect to Spark API",
     };
   }
 }

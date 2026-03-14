@@ -23,6 +23,8 @@ function DashboardContent() {
   const token = searchParams.get("token") || searchParams.get("accessToken");
   const configurationId = searchParams.get("configurationId");
   const teamId = searchParams.get("teamId");
+  const userId = searchParams.get("userId");
+  const next = searchParams.get("next");
 
   const [step, setStep] = useState(1);
   const [projects, setProjects] = useState<Project[]>([]);

@@ -20,7 +20,7 @@ interface ValidationResult {
 
 function DashboardContent() {
   const searchParams = useSearchParams();
-  const token = searchParams.get("token");
+  const token = searchParams.get("token") || searchParams.get("accessToken");
   const configurationId = searchParams.get("configurationId");
   const teamId = searchParams.get("teamId");
 

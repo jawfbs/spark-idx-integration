@@ -76,7 +76,7 @@ export default function HomePage() {
               Features
             </a>
             <a
-              href="https://github.com/jawfbs/spark-idx-integration"
+              href="https://vercel.com/integrations/spark-idx/new"
               style={{
                 fontSize: 13,
                 fontWeight: 600,
@@ -222,7 +222,7 @@ export default function HomePage() {
             }}
           >
             <a
-              href="https://github.com/jawfbs/spark-idx-integration"
+              href="https://vercel.com/integrations/spark-idx/new"
               style={{
                 display: "inline-flex",
                 alignItems: "center",

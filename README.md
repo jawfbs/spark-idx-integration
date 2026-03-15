@@ -151,7 +151,7 @@ spark-idx-integration/
 ├── tsconfig.json                     # TypeScript strict mode
 ├── postcss.config.mjs                # Tailwind v4 PostCSS
 ├── package.json                      # Dependencies
-└── README.md                         # You are here
+└── README.md                         # You are her
 
 ## 🚀 Quick Start
 

@@ -7,7 +7,7 @@
 ![Tailwind v4](https://img.shields.io/badge/Tailwind_v4-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 
-# 🏠 Spark IDX
+# 🏠 Spark ID
 
 ### Headless IDX Integration for the Vercel Marketplace
 

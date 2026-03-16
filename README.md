@@ -93,8 +93,6 @@ Use this tool to:
 - Test and verify API responses
 - Quickly look up field details when building your IDX integration
 
----
-
 ### Use in Your Code
 
 ```tsx

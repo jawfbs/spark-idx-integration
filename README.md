@@ -80,6 +80,23 @@ Production-ready property search — done.
    - Review and **Save & Deploy**
 6. Done — your project now has MLS access 🎉
 
+---
+
+## 🔧 Companion Tools
+
+### Spark Field Explorer
+Explore and inspect available fields from the Spark API interactively.
+
+🔗 **Live App:** [https://spark-api-checker.vercel.app/](https://spark-api-checker.vercel.app/)
+
+Use this tool to:
+- Browse available Spark API fields and resources
+- Check field names, data types, and metadata
+- Test and verify API responses
+- Quickly look up field details when building your IDX integration
+
+---
+
 ### Use in Your Code
 
 ```tsx
@@ -115,3 +132,4 @@ export default async function ListingsPage() {
     </section>
   );
 }
+

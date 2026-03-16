@@ -243,7 +243,7 @@ export default function HomePage() {
               Add to Vercel
             </a>
             <a
-              href="https://github.com/jawfbs/spark-idx-starter"
+              href="https://github.com/jawfbs/spark-idx-integration"
               target="_blank"
               rel="noopener noreferrer"
               style={{

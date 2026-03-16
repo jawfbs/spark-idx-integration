@@ -45,7 +45,7 @@ Developer imports SparkClient, fetches listings
 Production-ready property search — done.
 
 ### For Developers
-- **One-click install** from the Vercel Marketplace
+- One-click install** from the Vercel Marketplace
 - **Encrypted env vars** auto-injected into your project
 - **Zero config** — `SparkClient` reads credentials automatically
 - **Full TypeScript** types for all MLS data

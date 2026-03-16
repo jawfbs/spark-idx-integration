@@ -15,6 +15,8 @@
 
 [Install on Vercel](#-quick-start) · [View Demo](#-live-demo) · [Starter Template](https://github.com/jawfbs/spark-idx-starter) · [Spark API Docs](https://sparkplatform.com/docs/overview/api)
 
+</div>
+
 ## 🤔 The Problem
 
 Every real estate website needs **IDX** (Internet Data Exchange) — the ability to display MLS listings. Today's options are terrible:

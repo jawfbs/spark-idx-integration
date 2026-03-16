@@ -80,8 +80,6 @@ Production-ready property search — done.
    - Review and **Save & Deploy**
 6. Done — your project now has MLS access 🎉
 
----
-
 ## 🔧 Companion Tools
 
 ### Spark Field Explorer
